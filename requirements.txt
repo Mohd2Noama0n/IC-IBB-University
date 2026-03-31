@@ -5,3 +5,4 @@ plotly
 geopy
 xlsxwriter
 openpyxl
+streamlit_js_eval
