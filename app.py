@@ -153,7 +153,7 @@ fig = px.density_mapbox(
 )
     
     # إضافة سهم الشمال
-    fig.add_annotation(dict(x=0.02, y=0.98, showarrow=False, text="↑ N", font=dict(size=24, color="black")))
+fig.add_annotation(dict(x=0.02, y=0.98, showarrow=False, text="↑ N", font=dict(size=24, color="black")))
     fig.update_layout(margin={"r":0,"t":40,"l":0,"b":0})
     st.plotly_chart(fig, use_container_width=True)
 
