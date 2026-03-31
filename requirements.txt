@@ -2,9 +2,6 @@ streamlit
 pandas
 numpy
 plotly
-scipy
-streamlit-js-eval
-openpyxl
-xlsxwriter
-matplotlib
 geopy
+xlsxwriter
+openpyxl
