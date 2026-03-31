@@ -124,36 +124,35 @@ if 'points_df' in st.session_state:
     st.divider()
     st.subheader("🗺️ الخارطة الحرارية (Heatmap) وتوزيع الكثافة")
     
-   # --- الإصلاح: مقياس ألوان معياري (من 0 إلى 1 حصراً) ---
-color_scale_corrected = [
-    [0.0, "#ff0000"],    # 0% من المدى المحدد
-    [0.2, "#ffa500"],    # 20%
-    [0.5, "#ffff00"],    # 50%
-    [0.7, "#adff2f"],    # 70%
-    [0.85, "#66BD63"],   # 85%
-    [0.9, "#1A9850"],    # 90% (بداية النجاح)
-    [0.95, "#006837"],   # 95% (مثالي)
-    [1.0, "#4B0082"]     # 100% من المدى (يمثل الدمك المفرط)
-]
+    # --- مقياس ألوان معياري (من 0 إلى 1 حصراً) ---
+    color_scale_corrected = [
+        [0.0, "#ff0000"],    # 0%
+        [0.2, "#ffa500"],    # 20%
+        [0.5, "#ffff00"],    # 50%
+        [0.7, "#adff2f"],    # 70%
+        [0.85, "#66BD63"],   # 85%
+        [0.9, "#1A9850"],    # 90% (بداية النجاح)
+        [0.95, "#006837"],   # 95% (مثالي)
+        [1.0, "#4B0082"]     # 100% (دمك مفرط)
+    ]
 
-# --- رسم الخريطة مع تلافي أخطاء المدى ---
-fig = px.density_mapbox(
-    df, 
-    lat='Latitude', 
-    lon='Longitude', 
-    z='Compaction (%)',
-    radius=50, 
-    center=dict(lat=lat_ref, lon=lon_ref), 
-    zoom=18,
-    mapbox_style="carto-positron",
-    color_continuous_scale=color_scale_corrected,
-    # تحديد المدى الثابت يمنع القيم من الخروج عن نطاق مصفوفة الألوان
-    range_color=[70, 110], 
-    title=f"Heatmap - {proj_code} - Layer {layer_no}"
-)
+    # --- رسم الخريطة مع تلافي أخطاء المدى ---
+    fig = px.density_mapbox(
+        df, 
+        lat='Latitude', 
+        lon='Longitude', 
+        z='Compaction (%)',
+        radius=50, 
+        center=dict(lat=lat_ref, lon=lon_ref), 
+        zoom=18,
+        mapbox_style="carto-positron",
+        color_continuous_scale=color_scale_corrected,
+        range_color=[70, 110], 
+        title=f"Heatmap - {proj_code} - Layer {layer_no}"
+    )
     
-    # إضافة سهم الشمال
-fig.add_annotation(dict(x=0.02, y=0.98, showarrow=False, text="↑ N", font=dict(size=24, color="black")))
+    # إضافة سهم الشمال وتنسيق الهوامش
+    fig.add_annotation(dict(x=0.02, y=0.98, showarrow=False, text="↑ N", font=dict(size=24, color="black")))
     fig.update_layout(margin={"r":0,"t":40,"l":0,"b":0})
     st.plotly_chart(fig, use_container_width=True)
 
