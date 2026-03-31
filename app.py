@@ -124,27 +124,33 @@ if 'points_df' in st.session_state:
     st.divider()
     st.subheader("🗺️ الخارطة الحرارية (Heatmap) وتوزيع الكثافة")
     
-    # تدرج لوني احترافي من 11 لون
-    custom_colors = [
-        [0.0, "#ff0000"],   # 0%
-        [0.5, "#ffa500"],   # 50%
-        [0.8, "#ffff00"],   # 80%
-        [0.85, "#adff2f"],  # 85%
-        [0.9, "#66BD63"],   # 90% (بداية القبول)
-        [0.95, "#1A9850"],  # 95%
-        [1.0, "#006837"],   # 100% (المثالي)
-        [1.05, "#4B0082"],  # 105% (دمك مفرط)
-        [1.1, "#2E0854"]    # 110%
-    ]
+   # --- الإصلاح: مقياس ألوان معياري (من 0 إلى 1 حصراً) ---
+color_scale_corrected = [
+    [0.0, "#ff0000"],    # 0% من المدى المحدد
+    [0.2, "#ffa500"],    # 20%
+    [0.5, "#ffff00"],    # 50%
+    [0.7, "#adff2f"],    # 70%
+    [0.85, "#66BD63"],   # 85%
+    [0.9, "#1A9850"],    # 90% (بداية النجاح)
+    [0.95, "#006837"],   # 95% (مثالي)
+    [1.0, "#4B0082"]     # 100% من المدى (يمثل الدمك المفرط)
+]
 
-    fig = px.density_mapbox(
-        df, lat='Latitude', lon='Longitude', z='Compaction (%)',
-        radius=50, center=dict(lat=lat_ref, lon=lon_ref), zoom=18,
-        mapbox_style="carto-positron",
-        color_continuous_scale=custom_colors,
-        range_color=[70, 110],
-        title=f"Heatmap - {proj_code} - Layer {layer_no}"
-    )
+# --- رسم الخريطة مع تلافي أخطاء المدى ---
+fig = px.density_mapbox(
+    df, 
+    lat='Latitude', 
+    lon='Longitude', 
+    z='Compaction (%)',
+    radius=50, 
+    center=dict(lat=lat_ref, lon=lon_ref), 
+    zoom=18,
+    mapbox_style="carto-positron",
+    color_continuous_scale=color_scale_corrected,
+    # تحديد المدى الثابت يمنع القيم من الخروج عن نطاق مصفوفة الألوان
+    range_color=[70, 110], 
+    title=f"Heatmap - {proj_code} - Layer {layer_no}"
+)
     
     # إضافة سهم الشمال
     fig.add_annotation(dict(x=0.02, y=0.98, showarrow=False, text="↑ N", font=dict(size=24, color="black")))
