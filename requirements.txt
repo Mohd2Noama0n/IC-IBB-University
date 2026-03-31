@@ -3,6 +3,5 @@ pandas
 numpy
 plotly
 geopy
+streamlit-js-eval
 xlsxwriter
-openpyxl
-streamlit_js_eval
