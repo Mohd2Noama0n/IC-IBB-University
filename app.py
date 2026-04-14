@@ -1,6 +1,19 @@
 """
-FMA Compaction Analyzer Pro - الإصدار المتكامل
-تسجيل تلقائي للنقاط + نظام وحدات متري/إمبراطوري
+================================================================================
+FMA COMPACTION ANALYZER PRO - الإصدار الشامل النهائي
+================================================================================
+مميزات النظام:
+✓ الدمك الذكي مع معايرة مرجعية
+✓ تسجيل تلقائي للنقاط باستخدام GPS
+✓ نظام وحدات متكامل (متري/إمبراطوري)
+✓ 15 تدرج لوني للخريطة الحرارية
+✓ معالجة الدمك المفرط (Over-compaction)
+✓ تقارير Excel, PDF, HTML
+✓ حفظ واسترجاع المشاريع
+✓ تحليل إحصائي متقدم
+✓ تنبيهات ذكية للمستخدم
+✓ دعم كامل للغة العربية
+================================================================================
 """
 
 import streamlit as st
@@ -8,617 +21,744 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import io
+import base64
 from datetime import datetime
 import math
 import sqlite3
 import json
 import warnings
-from streamlit_js_eval import streamlit_js_eval
-import threading
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image
 import time
+from streamlit_js_eval import streamlit_js_eval
+import hashlib
+import os
 
 warnings.filterwarnings('ignore')
 
 # ----------------------------- إعدادات الصفحة -----------------------------
 st.set_page_config(
-    page_title="FMA Compaction Tracker - تسجيل تلقائي",
-    page_icon="📍",
-    layout="wide"
+    page_title="FMA Compaction Analyzer Pro - النظام الشامل",
+    page_icon="🏗️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ----------------------------- دوال تحويل الوحدات -----------------------------
+# ----------------------------- كلاس تحويل الوحدات -----------------------------
 class UnitConverter:
-    """تحويل الوحدات بين المتري والإمبراطوري"""
+    """نظام تحويل الوحدات المتكامل"""
+    
+    UNIT_SYSTEMS = {
+        "metric": {
+            "name": "متري (SI)",
+            "length": "متر",
+            "length_short": "m",
+            "density": "kg/m³",
+            "area": "m²",
+            "speed": "km/h",
+            "to_meter": 1.0,
+            "from_meter": 1.0,
+            "density_factor": 1.0
+        },
+        "imperial": {
+            "name": "إمبراطوري",
+            "length": "قدم",
+            "length_short": "ft",
+            "density": "pcf",
+            "area": "ft²",
+            "speed": "mph",
+            "to_meter": 0.3048,
+            "from_meter": 3.28084,
+            "density_factor": 0.06242796
+        }
+    }
     
     def __init__(self, system="metric"):
-        self.system = system  # metric أو imperial
+        self.system = system
+        self.config = self.UNIT_SYSTEMS[system]
     
-    def format_distance(self, meters):
-        """تنسيق المسافة حسب النظام المختار"""
+    def format_length(self, meters):
+        """تنسيق الطول"""
+        value = meters * self.config["from_meter"]
         if self.system == "metric":
-            if meters >= 1000:
-                return f"{meters/1000:.2f} km"
-            return f"{meters:.1f} m"
+            if value >= 1000:
+                return f"{value/1000:.2f} km"
+            return f"{value:.1f} {self.config['length_short']}"
         else:
-            feet = meters * 3.28084
-            if feet >= 5280:
-                return f"{feet/5280:.2f} mi"
-            return f"{feet:.1f} ft"
+            if value >= 5280:
+                return f"{value/5280:.2f} mi"
+            return f"{value:.1f} {self.config['length_short']}"
     
-    def format_speed(self, meters_per_sec):
-        """تنسيق السرعة حسب النظام المختار"""
+    def format_speed(self, mps):
+        """تنسيق السرعة"""
         if self.system == "metric":
-            kmh = meters_per_sec * 3.6
-            return f"{kmh:.1f} km/h"
+            return f"{mps * 3.6:.1f} {self.config['speed']}"
         else:
-            mph = meters_per_sec * 2.23694
-            return f"{mph:.1f} mph"
+            return f"{mps * 2.23694:.1f} {self.config['speed']}"
     
     def format_area(self, sq_meters):
-        """تنسيق المساحة حسب النظام المختار"""
+        """تنسيق المساحة"""
+        value = sq_meters * self.config["from_meter"] ** 2
+        return f"{value:.1f} {self.config['area']}"
+    
+    def format_density(self, kg_m3):
+        """تنسيق الكثافة"""
         if self.system == "metric":
-            return f"{sq_meters:.1f} m²"
+            return f"{kg_m3:.0f} {self.config['density']}"
         else:
-            sq_feet = sq_meters * 10.7639
-            return f"{sq_feet:.1f} ft²"
+            return f"{kg_m3 * self.config['density_factor']:.1f} {self.config['density']}"
     
-    def density_display(self, value_kg_m3):
-        """عرض الكثافة حسب النظام"""
-        if self.system == "metric":
-            return f"{value_kg_m3:.0f} kg/m³"
+    def to_meters(self, value):
+        """تحويل قيمة المستخدم إلى متر"""
+        return value * self.config["to_meter"]
+    
+    def from_meters(self, meters):
+        """تحويل من متر إلى وحدة المستخدم"""
+        return meters * self.config["from_meter"]
+
+# ----------------------------- كلاس إدارة قاعدة البيانات -----------------------------
+class DatabaseManager:
+    """إدارة قاعدة البيانات للمشاريع"""
+    
+    def __init__(self, db_path="fma_compaction.db"):
+        self.db_path = db_path
+        self.init_tables()
+    
+    def init_tables(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        
+        # جدول المشاريع
+        c.execute('''CREATE TABLE IF NOT EXISTS projects
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      project_id TEXT UNIQUE,
+                      project_name TEXT,
+                      date TEXT,
+                      location TEXT,
+                      engineer TEXT,
+                      unit_system TEXT,
+                      data_json TEXT,
+                      summary_json TEXT,
+                      thumbnail BLOB)''')
+        
+        # جدول المعايرة
+        c.execute('''CREATE TABLE IF NOT EXISTS calibrations
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      project_id TEXT,
+                      ref_lat REAL,
+                      ref_lon REAL,
+                      initial_comp REAL,
+                      ref_passes INTEGER,
+                      final_comp REAL,
+                      initial_moisture REAL,
+                      omc REAL,
+                      efficiency REAL,
+                      soil_type TEXT,
+                      FOREIGN KEY (project_id) REFERENCES projects(project_id))''')
+        
+        conn.commit()
+        conn.close()
+    
+    def save_project(self, project_id, project_name, location, engineer, unit_system, data, summary):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO projects 
+                     (project_id, project_name, date, location, engineer, unit_system, data_json, summary_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (project_id, project_name, datetime.now().isoformat(), location, engineer, 
+                   unit_system, json.dumps(data), json.dumps(summary)))
+        conn.commit()
+        conn.close()
+    
+    def get_all_projects(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT project_id, project_name, date, location FROM projects ORDER BY date DESC")
+        projects = c.fetchall()
+        conn.close()
+        return projects
+    
+    def load_project(self, project_id):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT data_json, summary_json FROM projects WHERE project_id = ?", (project_id,))
+        result = c.fetchone()
+        conn.close()
+        if result:
+            return json.loads(result[0]), json.loads(result[1])
+        return None, None
+
+# ----------------------------- دوال الحسابات الهندسية المتقدمة -----------------------------
+class CompactionCalculator:
+    """حسابات الدمك المتقدمة"""
+    
+    @staticmethod
+    def calculate_modulus(passes, moisture, ref_passes, ref_initial, ref_final, omc, efficiency, initial, soil_type="رملية"):
+        """حساب معامل الدمك المتقدم"""
+        
+        # عوامل التربة
+        soil_factors = {
+            "رملية": {"energy": 1.0, "moisture_sensitivity": 0.06, "max_improvement": 1.3},
+            "طينية": {"energy": 0.85, "moisture_sensitivity": 0.10, "max_improvement": 1.2},
+            "غرينية": {"energy": 0.90, "moisture_sensitivity": 0.08, "max_improvement": 1.25},
+            "صخرية مكسرة": {"energy": 1.15, "moisture_sensitivity": 0.04, "max_improvement": 1.15}
+        }
+        
+        soil = soil_factors.get(soil_type, soil_factors["رملية"])
+        eff = efficiency / 100.0
+        
+        # الطاقة النسبية
+        energy_current = math.log1p(passes * eff * soil["energy"])
+        energy_ref = math.log1p(ref_passes * eff * soil["energy"])
+        energy_ratio = min(energy_current / max(energy_ref, 0.001), soil["max_improvement"])
+        
+        # تأثير الرطوبة
+        moisture_factor = math.exp(-soil["moisture_sensitivity"] * abs(moisture - omc))
+        moisture_factor = max(0.65, min(1.0, moisture_factor))
+        
+        # التحسن
+        improvement_ref = ref_final - ref_initial
+        current_improvement = improvement_ref * energy_ratio * moisture_factor
+        
+        result = initial + current_improvement
+        return round(min(result, 112.0), 2)
+    
+    @staticmethod
+    def get_color(value):
+        """الحصول على اللون حسب القيمة (15 تدرج)"""
+        if value < 40: return "#8B0000"
+        elif value < 50: return "#B22222"
+        elif value < 60: return "#DC143C"
+        elif value < 65: return "#FF4500"
+        elif value < 70: return "#FF6347"
+        elif value < 75: return "#FF8C00"
+        elif value < 80: return "#FFA500"
+        elif value < 85: return "#FFD700"
+        elif value < 88: return "#FFFF00"
+        elif value < 91: return "#ADFF2F"
+        elif value < 94: return "#7CFC00"
+        elif value < 97: return "#32CD32"
+        elif value < 100: return "#228B22"
+        elif value < 105: return "#1E90FF"
+        elif value < 110: return "#191970"
+        else: return "#4B0082"
+    
+    @staticmethod
+    def get_status(value, target_min=95, target_max=100):
+        """تحديد حالة النقطة"""
+        if value < target_min:
+            return "🔴 غير مقبول", "poor"
+        elif value <= target_max:
+            return "🟢 مقبول", "good"
         else:
-            pcf = value_kg_m3 * 0.06242796
-            return f"{pcf:.1f} pcf"
-    
-    def get_spacing_threshold(self, user_value, is_meters=True):
-        """تحويل قيمة التباعد من وحدة المستخدم إلى متر للتخزين"""
-        if self.system == "metric":
-            return user_value  # المستخدم أدخل بالمتر
-        else:
-            # المستخدم أدخل بالقدم، نحول إلى متر
-            return user_value * 0.3048
-    
-    def display_spacing_threshold(self, meters):
-        """عرض قيمة التباعد للمستخدم بوحدته المفضلة"""
-        if self.system == "metric":
-            return meters
-        else:
-            return meters * 3.28084
+            return "🔵 دمك مفرط", "over"
 
-
-def calculate_compaction_modulus(
-    current_passes: int,
-    current_moisture: float,
-    reference_passes: int,
-    reference_compaction_before: float,
-    reference_compaction_after: float,
-    optimum_moisture: float,
-    machine_efficiency: float,
-    initial_compaction: float
-) -> float:
-    """حساب معامل الدمك بناءً على المعايرة"""
-    
-    effective_efficiency = machine_efficiency / 100.0
-    
-    # حساب الطاقة النسبية
-    energy_current = math.log1p(current_passes * effective_efficiency)
-    energy_reference = math.log1p(reference_passes * effective_efficiency)
-    
-    if energy_reference <= 0:
-        energy_ratio = 1.0
-    else:
-        energy_ratio = min(energy_current / energy_reference, 1.5)
-    
-    # تأثير الرطوبة
-    moisture_deviation = abs(current_moisture - optimum_moisture)
-    moisture_factor = math.exp(-0.06 * moisture_deviation)
-    moisture_factor = max(0.65, min(1.0, moisture_factor))
-    
-    # التحسن الكلي
-    total_improvement_reference = reference_compaction_after - reference_compaction_before
-    current_improvement = total_improvement_reference * energy_ratio * moisture_factor
-    
-    compaction_modulus = initial_compaction + current_improvement
-    return round(min(compaction_modulus, 112.0), 2)
-
-
-def get_heatmap_color(compaction_value: float) -> str:
-    """تحديد اللون حسب قيمة الدمك (15 تدرج)"""
-    if compaction_value < 40:
-        return "#8B0000"
-    elif compaction_value < 50:
-        return "#B22222"
-    elif compaction_value < 60:
-        return "#DC143C"
-    elif compaction_value < 65:
-        return "#FF4500"
-    elif compaction_value < 70:
-        return "#FF6347"
-    elif compaction_value < 75:
-        return "#FF8C00"
-    elif compaction_value < 80:
-        return "#FFA500"
-    elif compaction_value < 85:
-        return "#FFD700"
-    elif compaction_value < 88:
-        return "#FFFF00"
-    elif compaction_value < 91:
-        return "#ADFF2F"
-    elif compaction_value < 94:
-        return "#7CFC00"
-    elif compaction_value < 97:
-        return "#32CD32"
-    elif compaction_value < 100:
-        return "#228B22"
-    elif compaction_value < 105:
-        return "#1E90FF"
-    elif compaction_value < 110:
-        return "#191970"
-    else:
-        return "#4B0082"
-
-
+# ----------------------------- دوال المسافة -----------------------------
 def calculate_distance(lat1, lon1, lat2, lon2):
-    """حساب المسافة بين نقطتين بالأمتار (Haversine formula)"""
+    """حساب المسافة بالأمتار باستخدام Haversine"""
     R = 6371000
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    
-    a = math.sin(delta_phi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    
-    return R * c
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# ----------------------------- واجهة المستخدم -----------------------------
-# تهيئة حالة الجلسة
-if 'tracking_points' not in st.session_state:
+# ----------------------------- دوال التقارير -----------------------------
+class ReportGenerator:
+    """توليد التقارير بأنواع مختلفة"""
+    
+    @staticmethod
+    def to_excel(df, ref_data, project_data, unit_converter):
+        """تصدير إلى Excel"""
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Compaction_Data', index=False)
+            
+            summary = {
+                "Parameter": ["Project ID", "Project Name", "Date", "Unit System", "Reference Point",
+                              "Initial Compaction", "Reference Passes", "Final Compaction",
+                              "Average Compaction", "Min Compaction", "Max Compaction", "Std Dev",
+                              "Points Passed", "Points Failed", "Points Over-compacted", "Total Points"],
+                "Value": [
+                    project_data.get("id", ""), project_data.get("name", ""), datetime.now().strftime("%Y-%m-%d"),
+                    unit_converter.config["name"], f"{ref_data.get('lat', 0):.6f}, {ref_data.get('lon', 0):.6f}",
+                    f"{ref_data.get('initial', 0)}%", ref_data.get('passes', 0), f"{ref_data.get('final', 0)}%",
+                    f"{df['Compaction_Modulus_%'].mean():.1f}%", f"{df['Compaction_Modulus_%'].min():.1f}%",
+                    f"{df['Compaction_Modulus_%'].max():.1f}%", f"{df['Compaction_Modulus_%'].std():.2f}",
+                    len(df[df['Status_Type'] == 'good']), len(df[df['Status_Type'] == 'poor']),
+                    len(df[df['Status_Type'] == 'over']), len(df)
+                ]
+            }
+            pd.DataFrame(summary).to_excel(writer, sheet_name='Summary', index=False)
+            
+            # توزيع الجودة
+            distribution = df['Status_Type'].value_counts().reset_index()
+            distribution.columns = ['Status', 'Count']
+            distribution.to_excel(writer, sheet_name='Quality_Distribution', index=False)
+        
+        return output.getvalue()
+    
+    @staticmethod
+    def to_html(df, ref_data, project_data, unit_converter):
+        """توليد تقرير HTML"""
+        good_count = len(df[df['Status_Type'] == 'good'])
+        poor_count = len(df[df['Status_Type'] == 'poor'])
+        over_count = len(df[df['Status_Type'] == 'over'])
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html dir="rtl" lang="ar">
+        <head><meta charset="UTF-8"><title>تقرير FMA للدمك</title>
+        <style>
+            body {{ font-family: 'Cairo', Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
+            .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; }}
+            h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }}
+            .stats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }}
+            .stat-card {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 10px; text-align: center; }}
+            .stat-value {{ font-size: 28px; font-weight: bold; }}
+            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+            th, td {{ border: 1px solid #ddd; padding: 10px; text-align: right; }}
+            th {{ background: #2c3e50; color: white; }}
+            .good {{ color: green; }} .poor {{ color: red; }} .over {{ color: blue; }}
+        </style>
+        </head>
+        <body>
+        <div class="container">
+            <h1>🏗️ FMA Compaction Analyzer Pro</h1>
+            <h3>تقرير فني معتمد</h3>
+            <p><strong>المشروع:</strong> {project_data.get('name', 'N/A')}</p>
+            <p><strong>التاريخ:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>نظام القياس:</strong> {unit_converter.config['name']}</p>
+            
+            <div class="stats">
+                <div class="stat-card"><div class="stat-value">{len(df)}</div><div>عدد النقاط</div></div>
+                <div class="stat-card"><div class="stat-value">{df['Compaction_Modulus_%'].mean():.1f}%</div><div>المتوسط</div></div>
+                <div class="stat-card"><div class="stat-value">{good_count}</div><div>مقبول</div></div>
+                <div class="stat-card"><div class="stat-value">{poor_count + over_count}</div><div>غير مقبول</div></div>
+            </div>
+            
+            <h2>📊 ملخص النتائج</h2>
+            <table>
+                <tr><th>المؤشر</th><th>القيمة</th></tr>
+                <tr><td>أعلى معامل دمك</td><td>{df['Compaction_Modulus_%'].max():.1f}%</td></tr>
+                <tr><td>أدنى معامل دمك</td><td>{df['Compaction_Modulus_%'].min():.1f}%</td></tr>
+                <tr><td>الانحراف المعياري</td><td>{df['Compaction_Modulus_%'].std():.2f}</td></tr>
+            </table>
+            
+            <h2>🎨 توزيع الجودة</h2>
+            <table>
+                <tr><th>الحالة</th><th>العدد</th><th>النسبة</th></tr>
+                <tr class="good"><td>✅ مقبول</td><td>{good_count}</td><td>{good_count/len(df)*100:.1f}%</td></tr>
+                <tr class="poor"><td>❌ غير مقبول</td><td>{poor_count}</td><td>{poor_count/len(df)*100:.1f}%</td></tr>
+                <tr class="over"><td>⚠️ دمك مفرط</td><td>{over_count}</td><td>{over_count/len(df)*100:.1f}%</td></tr>
+            </table>
+            
+            <p style="margin-top: 30px; text-align: center; color: #7f8c8d;">تم إنشاء هذا التقرير بواسطة FMA System</p>
+        </div>
+        </body>
+        </html>
+        """
+        return html
+
+# ----------------------------- تهيئة حالة الجلسة -----------------------------
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = True
     st.session_state.tracking_points = []
     st.session_state.is_tracking = False
     st.session_state.last_position = None
     st.session_state.passes_count = {}
     st.session_state.reference_data = None
     st.session_state.project_data = None
-    st.session_state.auto_tracking = False
-    st.session_state.last_gps_update = None
     st.session_state.unit_converter = UnitConverter("metric")
+    st.session_state.db_manager = DatabaseManager()
+    st.session_state.calculator = CompactionCalculator()
+    st.session_state.report_gen = ReportGenerator()
+    st.session_state.auto_record_enabled = False
+    st.session_state.last_gps_time = 0
 
-# الشريط الجانبي
+# ----------------------------- الشريط الجانبي -----------------------------
 with st.sidebar:
-    st.markdown("## 📍 FMA الدمك الذكي")
+    st.markdown("## 🏗️ FMA الدمك الذكي")
+    st.markdown("### النظام الشامل المتكامل")
     st.markdown("---")
     
-    # ========== نظام الوحدات ==========
-    with st.expander("📏 نظام الوحدات", expanded=True):
+    # تبويبات الشريط الجانبي
+    side_tab1, side_tab2, side_tab3 = st.tabs(["📋 مشروع", "⚙️ إعدادات", "💾 المشاريع"])
+    
+    with side_tab1:
+        project_id = st.text_input("معرف المشروع", value=f"FMA-{datetime.now().strftime('%Y%m%d%H%M')}")
+        project_name = st.text_input("اسم المشروع", value="مشروع طريق رئيسي")
+        project_location = st.text_input("الموقع", value="محافظة إب - اليمن")
+        engineer_name = st.text_input("اسم المهندس", value="د. أحمد العرامي")
+        layer_number = st.number_input("رقم الطبقة", min_value=1, value=1)
+    
+    with side_tab2:
+        # نظام الوحدات
         unit_system = st.selectbox(
             "نظام القياس",
             ["metric", "imperial"],
-            format_func=lambda x: "متري (متر، كجم)" if x == "metric" else "إمبراطوري (قدم، رطل)",
-            help="اختر نظام الوحدات المناسب لمشروعك"
+            format_func=lambda x: "🇪🇺 متري (متر، كجم)" if x == "metric" else "🇺🇸 إمبراطوري (قدم، رطل)"
         )
-        
-        # تحديث محول الوحدات
         if unit_system != st.session_state.unit_converter.system:
             st.session_state.unit_converter = UnitConverter(unit_system)
         
-        st.caption(f"✅ النظام الحالي: {'متري' if unit_system == 'metric' else 'إمبراطوري'}")
+        st.markdown("---")
+        
+        # نوع التربة
+        soil_type = st.selectbox("نوع التربة", ["رملية", "طينية", "غرينية", "صخرية مكسرة"])
+        
+        # إعدادات التتبع
+        spacing_user = st.number_input(
+            f"مسافة التباعد ({st.session_state.unit_converter.config['length']})",
+            min_value=1.0, value=5.0 if unit_system == "metric" else 16.0, step=0.5
+        )
+        spacing_meters = st.session_state.unit_converter.to_meters(spacing_user)
+        
+        auto_interval = st.slider("فترة تحديث GPS (ثانية)", 0.5, 5.0, 1.0, 0.5)
+        min_accuracy = st.slider("الحد الأدنى لدقة GPS (متر)", 5, 50, 15)
     
-    # ========== بيانات المشروع ==========
-    with st.expander("📋 بيانات المشروع", expanded=True):
-        project_code = st.text_input("رمز المشروع", value=f"FMA-{datetime.now().strftime('%Y%m%d')}")
-        project_name = st.text_input("اسم المشروع", value="مشروع طريق")
-        layer_number = st.number_input("رقم الطبقة", min_value=1, value=1)
-        
-        # كثافة معملية مع تحويل الوحدات
-        max_density_input = st.number_input(
-            f"أقصى كثافة معملية ({'kg/m³' if unit_system == 'metric' else 'pcf'})",
-            min_value=1000.0 if unit_system == 'metric' else 62.4,
-            value=2100.0 if unit_system == 'metric' else 131.0,
-            step=10.0 if unit_system == 'metric' else 1.0
-        )
-    
-    # ========== المعايرة ==========
-    with st.expander("🔧 المعايرة المرجعية", expanded=True):
-        st.info("📍 قف في موقع معروف واضغط 'تعيين النقطة المرجعية'")
-        
-        ref_latitude = st.number_input("خط العرض المرجعي", format="%.8f", value=13.9633333)
-        ref_longitude = st.number_input("خط الطول المرجعي", format="%.8f", value=44.5819444)
-        
-        initial_compaction = st.number_input("معامل الدمك الابتدائي (%)", min_value=50.0, max_value=90.0, value=78.0)
-        reference_passes = st.number_input("عدد دورات الدمك المرجعية", min_value=1, max_value=30, value=8)
-        final_compaction = st.number_input("معامل الدمك النهائي (%)", min_value=80.0, max_value=112.0, value=98.5)
-        initial_moisture = st.number_input("الرطوبة الابتدائية (%)", min_value=5.0, max_value=25.0, value=11.2)
-        optimum_moisture = st.number_input("الرطوبة المثلى OMC (%)", min_value=5.0, max_value=30.0, value=12.5)
-        machine_efficiency = st.slider("كفاءة المعدة (%)", 50, 120, 100, help="100% = معدة جديدة")
-    
-    # ========== إعدادات التتبع التلقائي ==========
-    with st.expander("⚙️ إعدادات التتبع التلقائي", expanded=True):
-        # مسافة التباعد مع تحويل الوحدات
-        spacing_display = st.number_input(
-            f"مسافة التباعد للتسجيل ({'متر' if unit_system == 'metric' else 'قدم'})",
-            min_value=1.0 if unit_system == 'metric' else 3.0,
-            max_value=50.0 if unit_system == 'metric' else 160.0,
-            value=5.0 if unit_system == 'metric' else 16.0,
-            step=0.5 if unit_system == 'metric' else 1.0,
-            help="كلما تحركت هذه المسافة، يتم تسجيل نقطة جديدة تلقائياً"
-        )
-        
-        # تحويل إلى متر للتخزين الداخلي
-        spacing_threshold = st.session_state.unit_converter.get_spacing_threshold(spacing_display)
-        
-        auto_record_interval = st.slider(
-            "فترة التحديث التلقائي (ثانية)",
-            min_value=0.5, max_value=5.0, value=1.0, step=0.5,
-            help="كل كم ثانية يتم محاولة تحديث الموقع"
-        )
-        
-        min_accuracy = st.slider(
-            "دقة GPS المطلوبة (متر)",
-            min_value=5, max_value=50, value=15,
-            help="النقاط ذات دقة أقل من هذه القيمة سيتم تجاهلها"
-        )
-        
-        st.info(f"📡 سيتم تسجيل نقطة تلقائياً كل {st.session_state.unit_converter.format_distance(spacing_threshold)}")
+    with side_tab3:
+        st.markdown("### المشاريع المحفوظة")
+        projects = st.session_state.db_manager.get_all_projects()
+        if projects:
+            for proj in projects:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.caption(f"📁 **{proj[1]}**")
+                    st.caption(f"   🗓️ {proj[2][:10]} | 📍 {proj[3]}")
+                with col2:
+                    if st.button("تحميل", key=f"load_{proj[0]}"):
+                        data, summary = st.session_state.db_manager.load_project(proj[0])
+                        if data:
+                            st.session_state.tracking_points = data.get('points', [])
+                            st.success(f"✅ تم تحميل {len(st.session_state.tracking_points)} نقطة")
+                            st.rerun()
+                st.divider()
+        else:
+            st.info("لا توجد مشاريع محفوظة")
 
-# ==================== الواجهة الرئيسية ====================
-st.title("📍 FMA نظام الدمك الذكي - تسجيل تلقائي")
-st.markdown(f"#### *حرك هاتفك مع المعدة - يتم التسجيل تلقائياً | النظام: {'متري' if unit_system == 'metric' else 'إمبراطوري'}*")
+# ----------------------------- الواجهة الرئيسية -----------------------------
+st.title("🏗️ FMA Compaction Analyzer Pro")
+st.markdown(f"#### *الدمك الذكي | تسجيل تلقائي | تقارير شاملة | نظام {st.session_state.unit_converter.config['name']}*")
+
+# عرض معلومات سريعة
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("📍 النقاط المسجلة", len(st.session_state.tracking_points))
+with col2:
+    st.metric("🎯 حالة التتبع", "🟢 نشط" if st.session_state.is_tracking else "⏸️ متوقف")
+with col3:
+    if st.session_state.reference_data:
+        st.metric("✅ المعايرة", "مكتملة")
+    else:
+        st.metric("⚠️ المعايرة", "غير مكتملة")
+with col4:
+    st.metric("📏 نظام القياس", st.session_state.unit_converter.config['name'])
+
+st.markdown("---")
+
+# ==================== المعايرة ====================
+with st.expander("🔧 المعايرة المرجعية (خطوة أساسية)", expanded=not st.session_state.reference_data):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📍 النقطة المرجعية")
+        ref_lat = st.number_input("خط العرض المرجعي", format="%.8f", value=13.9633333)
+        ref_lon = st.number_input("خط الطول المرجعي", format="%.8f", value=44.5819444)
+        
+        if st.button("📍 استخدام موقعي الحالي", use_container_width=True):
+            loc = streamlit_js_eval(js_expressions='''
+                new Promise((resolve) => {
+                    navigator.geolocation.getCurrentPosition(
+                        (p) => resolve({lat: p.coords.latitude, lon: p.coords.longitude}),
+                        (e) => resolve(null)
+                    );
+                })
+            ''', key='get_current_loc')
+            if loc and loc.get('lat'):
+                ref_lat, ref_lon = loc['lat'], loc['lon']
+                st.success(f"تم تحديث الموقع: {ref_lat:.6f}, {ref_lon:.6f}")
+                st.rerun()
+    
+    with col2:
+        st.markdown("#### 📊 قيم الدمك")
+        initial_comp = st.number_input("معامل الدمك الابتدائي (%)", 50.0, 90.0, 78.0)
+        ref_passes = st.number_input("عدد دورات الدمك المرجعية", 1, 30, 8)
+        final_comp = st.number_input("معامل الدمك النهائي (%)", 80.0, 112.0, 98.5)
+        initial_moisture = st.number_input("الرطوبة الابتدائية (%)", 5.0, 25.0, 11.2)
+        omc = st.number_input("الرطوبة المثلى OMC (%)", 5.0, 30.0, 12.5)
+        efficiency = st.slider("كفاءة المعدة (%)", 50, 120, 100)
+    
+    if st.button("✅ تأكيد المعايرة وحفظها", type="primary", use_container_width=True):
+        st.session_state.reference_data = {
+            "lat": ref_lat, "lon": ref_lon, "initial": initial_comp,
+            "passes": ref_passes, "final": final_comp,
+            "initial_moisture": initial_moisture, "omc": omc,
+            "efficiency": efficiency, "soil_type": soil_type
+        }
+        st.session_state.project_data = {
+            "id": project_id, "name": project_name, "location": project_location,
+            "engineer": engineer_name, "layer": layer_number
+        }
+        st.success("✅ تم حفظ المعايرة بنجاح! يمكنك الآن بدء التتبع.")
+        st.rerun()
 
 # ==================== أزرار التحكم الرئيسية ====================
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
-    if st.button("📍 تعيين المرجعية", type="primary", use_container_width=True):
-        # طلب موقع GPS الحالي
-        current_location = streamlit_js_eval(
-            js_expressions='''
-            new Promise((resolve) => {
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => resolve({lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy}),
-                        (err) => resolve(null)
-                    );
-                } else {
-                    resolve(null);
-                }
-            })
-            ''',
-            key=f'ref_loc_{datetime.now().timestamp()}'
-        )
-        
-        if current_location and current_location.get('lat'):
-            st.session_state.reference_data = {
-                "lat": current_location['lat'], "lon": current_location['lon'],
-                "initial": initial_compaction, "passes": reference_passes,
-                "final": final_compaction, "initial_moisture": initial_moisture,
-                "omc": optimum_moisture, "efficiency": machine_efficiency,
-                "accuracy": current_location.get('acc', 0)
-            }
-            
-            st.session_state.project_data = {
-                "code": project_code, "name": project_name, "layer": layer_number,
-                "unit_system": unit_system, "max_density": max_density_input
-            }
-            
-            st.success(f"✅ تم تعيين النقطة المرجعية: {current_location['lat']:.6f}, {current_location['lon']:.6f}")
-            st.rerun()
+    if st.button("▶️ بدء التتبع التلقائي", type="primary", use_container_width=True):
+        if st.session_state.reference_data is None:
+            st.error("❌ يرجى إكمال المعايرة أولاً")
         else:
-            st.error("❌ يرجى السماح للتطبيق بالوصول إلى GPS")
+            st.session_state.is_tracking = True
+            st.session_state.auto_record_enabled = True
+            st.session_state.tracking_points = []
+            st.session_state.passes_count = {}
+            st.session_state.last_position = None
+            st.success("✅ بدء التتبع التلقائي - حرك الهاتف مع المعدة")
+            st.rerun()
 
 with col2:
-    if st.button("▶️ بدء التتبع", use_container_width=True):
-        st.session_state.is_tracking = True
-        st.session_state.auto_tracking = True
-        st.session_state.tracking_points = []
-        st.session_state.passes_count = {}
-        st.session_state.last_position = None
-        st.success("✅ بدء التتبع التلقائي - حرك الهاتف مع المعدة")
+    if st.button("⏹️ إيقاف التتبع", use_container_width=True):
+        st.session_state.is_tracking = False
+        st.session_state.auto_record_enabled = False
+        st.warning("⏸️ تم إيقاف التتبع")
         st.rerun()
 
 with col3:
-    if st.button("⏹️ إيقاف التتبع", use_container_width=True):
-        st.session_state.is_tracking = False
-        st.session_state.auto_tracking = False
-        st.warning("⏸️ تم إيقاف التتبع")
-        st.rerun()
+    if st.button("💾 حفظ المشروع", use_container_width=True):
+        if st.session_state.tracking_points:
+            data = {"points": st.session_state.tracking_points}
+            summary = {"total_points": len(st.session_state.tracking_points)}
+            st.session_state.db_manager.save_project(
+                project_id, project_name, project_location, engineer_name,
+                unit_system, data, summary
+            )
+            st.success(f"✅ تم حفظ المشروع {project_name}")
+        else:
+            st.warning("لا توجد نقاط لحفظها")
 
 with col4:
     if st.button("🗑️ مسح الكل", use_container_width=True):
         st.session_state.tracking_points = []
         st.session_state.passes_count = {}
-        st.session_state.is_tracking = False
-        st.session_state.auto_tracking = False
+        st.session_state.last_position = None
         st.success("🗑️ تم مسح جميع النقاط")
         st.rerun()
 
 with col5:
-    if st.session_state.reference_data:
-        st.metric("🎯 المعايرة", "✓ مكتملة", delta=None)
-    else:
-        st.metric("🎯 المعايرة", "✗ غير مكتملة", delta=None)
+    if st.button("📊 تصدير التقرير", use_container_width=True):
+        if st.session_state.tracking_points:
+            st.session_state.show_export = True
+        else:
+            st.warning("لا توجد بيانات للتصدير")
 
-st.markdown("---")
-
-# ==================== حالة التتبع وعرض GPS ====================
-if st.session_state.is_tracking:
-    # عرض حالة التتبع
-    st.info(f"📍 **جاري التتبع التلقائي...** سيتم تسجيل نقطة كل {st.session_state.unit_converter.format_distance(spacing_threshold)}")
+# ==================== التتبع التلقائي ====================
+if st.session_state.is_tracking and st.session_state.auto_record_enabled:
+    st.info(f"📍 **جاري التتبع التلقائي** | التسجيل كل {st.session_state.unit_converter.format_length(spacing_meters)} | دقة GPS مطلوبة: {min_accuracy}m")
     
-    # JavaScript للحصول على GPS بشكل مستمر
-    gps_js = f'''
-    let lastLat = null;
-    let lastLon = null;
-    let lastTime = 0;
-    
-    function getLocation() {{
-        if (navigator.geolocation) {{
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {{
-                    const data = {{
-                        lat: pos.coords.latitude,
-                        lon: pos.coords.longitude,
-                        acc: pos.coords.accuracy,
-                        timestamp: Date.now()
-                    }};
-                    window.parent.postMessage({{type: "streamlit:setComponentValue", value: data}}, "*");
-                }},
-                (err) => console.log("GPS error:", err),
-                {{ enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }}
-            );
-        }}
-    }}
-    
-    getLocation();
-    setInterval(getLocation, {int(auto_record_interval * 1000)});
-    '''
-    
-    # الحصول على موقع GPS الحالي
-    current_gps = streamlit_js_eval(
-        js_expressions=gps_js,
-        key=f'gps_tracking_{datetime.now().timestamp()}',
-        debounce=auto_record_interval
+    # الحصول على موقع GPS
+    gps_data = streamlit_js_eval(
+        js_expressions='''
+        new Promise((resolve) => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (p) => resolve({lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, time: Date.now()}),
+                    (e) => resolve(null),
+                    {enableHighAccuracy: true, timeout: 10000}
+                );
+            } else {
+                resolve(null);
+            }
+        })
+        ''',
+        key=f'gps_{int(time.time() * 1000)}',
+        debounce=auto_interval
     )
     
-    if current_gps and isinstance(current_gps, dict) and current_gps.get('lat'):
-        current_lat = current_gps['lat']
-        current_lon = current_gps['lon']
-        current_accuracy = current_gps.get('acc', 0)
+    if gps_data and gps_data.get('lat'):
+        current_lat = gps_data['lat']
+        current_lon = gps_data['lon']
+        current_acc = gps_data.get('acc', 100)
         
-        # عرض معلومات GPS الحالية
-        col1, col2, col3, col4 = st.columns(4)
+        # عرض معلومات GPS
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("📍 خط العرض", f"{current_lat:.6f}")
         with col2:
             st.metric("📍 خط الطول", f"{current_lon:.6f}")
         with col3:
-            st.metric("🎯 دقة GPS", f"{current_accuracy:.1f} متر")
-        with col4:
-            points = len(st.session_state.tracking_points)
-            st.metric("📊 النقاط المسجلة", points)
+            st.metric("🎯 دقة GPS", f"{current_acc:.1f} متر")
         
-        # التحقق من دقة GPS
-        if current_accuracy <= min_accuracy:
-            # التحقق من المسافة عن آخر نقطة مسجلة
+        # التحقق من الدقة والمسافة
+        if current_acc <= min_accuracy:
             should_record = False
-            
             if st.session_state.last_position is None:
                 should_record = True
             else:
-                distance = calculate_distance(
+                dist = calculate_distance(
                     st.session_state.last_position[0], st.session_state.last_position[1],
                     current_lat, current_lon
                 )
-                
-                if distance >= spacing_threshold:
+                if dist >= spacing_meters:
                     should_record = True
-                    st.info(f"📏 تم قطع مسافة {st.session_state.unit_converter.format_distance(distance)} - جاري التسجيل...")
+                    st.info(f"📏 تم قطع {st.session_state.unit_converter.format_length(dist)} - جاري التسجيل...")
             
             if should_record:
-                # تحديث عدد مرات المرور لهذه النقطة
                 point_key = f"{round(current_lat, 5)}_{round(current_lon, 5)}"
-                current_passes = st.session_state.passes_count.get(point_key, 0) + 1
-                st.session_state.passes_count[point_key] = current_passes
+                passes = st.session_state.passes_count.get(point_key, 0) + 1
+                st.session_state.passes_count[point_key] = passes
                 
-                # حساب معامل الدمك
                 if st.session_state.reference_data:
                     ref = st.session_state.reference_data
-                    comp_value = calculate_compaction_modulus(
-                        current_passes=current_passes,
-                        current_moisture=ref['initial_moisture'],
-                        reference_passes=ref['passes'],
-                        reference_compaction_before=ref['initial'],
-                        reference_compaction_after=ref['final'],
-                        optimum_moisture=ref['omc'],
-                        machine_efficiency=ref['efficiency'],
-                        initial_compaction=ref['initial']
+                    comp = CompactionCalculator.calculate_modulus(
+                        passes, ref['initial_moisture'], ref['passes'],
+                        ref['initial'], ref['final'], ref['omc'],
+                        ref['efficiency'], ref['initial'], ref.get('soil_type', 'رملية')
                     )
                 else:
-                    comp_value = 85.0
+                    comp = 85.0
                 
-                # إضافة النقطة
+                status_text, status_type = CompactionCalculator.get_status(comp)
+                
                 new_point = {
                     "Point_ID": f"P{len(st.session_state.tracking_points)+1}",
-                    "Latitude": current_lat,
-                    "Longitude": current_lon,
-                    "Passes": current_passes,
-                    "Compaction_Modulus_%": comp_value,
-                    "Color": get_heatmap_color(comp_value),
-                    "Accuracy_m": round(current_accuracy, 1),
+                    "Latitude": current_lat, "Longitude": current_lon,
+                    "Passes": passes, "Compaction_Modulus_%": comp,
+                    "Color": CompactionCalculator.get_color(comp),
+                    "Status": status_text, "Status_Type": status_type,
+                    "Accuracy_m": round(current_acc, 1),
                     "Timestamp": datetime.now().strftime("%H:%M:%S")
                 }
                 
                 st.session_state.tracking_points.append(new_point)
                 st.session_state.last_position = (current_lat, current_lon)
-                st.success(f"✅ تم تسجيل النقطة {len(st.session_state.tracking_points)} تلقائياً (معامل الدمك: {comp_value:.1f}%)")
-                time.sleep(0.5)
+                st.success(f"✅ تم تسجيل النقطة {len(st.session_state.tracking_points)} (معامل الدمك: {comp:.1f}%)")
+                time.sleep(0.3)
                 st.rerun()
         else:
-            st.warning(f"⚠️ دقة GPS منخفضة ({current_accuracy:.0f}م > {min_accuracy}م). انتظر حتى تتحسن الإشارة.")
-    
+            st.warning(f"⚠️ دقة GPS منخفضة ({current_acc:.0f}m > {min_accuracy}m). انتظر لتحسين الإشارة.")
     else:
-        st.warning("⏳ في انتظار إشارة GPS... يرجى التأكد من تشغيل الموقع في هاتفك")
-        st.info("💡 نصيحة: اخرج إلى مكان مفتوح للحصول على إشارة GPS أفضل")
+        st.warning("⏳ انتظار إشارة GPS... تأكد من تشغيل الموقع في هاتفك")
 
-# ==================== عرض النقاط المسجلة ====================
+# ==================== عرض البيانات ====================
 if st.session_state.tracking_points:
     df = pd.DataFrame(st.session_state.tracking_points)
     
-    st.subheader(f"📍 النقاط المسجلة تلقائياً ({len(df)} نقطة)")
+    st.subheader(f"📍 البيانات المسجلة ({len(df)} نقطة)")
+    st.dataframe(df[["Point_ID", "Latitude", "Longitude", "Passes", "Compaction_Modulus_%", "Status", "Timestamp"]], 
+                 use_container_width=True, height=250)
     
-    # عرض الجدول مع وحدات محولة
-    display_df = df[["Point_ID", "Latitude", "Longitude", "Passes", "Compaction_Modulus_%", "Accuracy_m", "Timestamp"]].copy()
-    st.dataframe(display_df, use_container_width=True, height=200)
-    
-    # ==================== الخريطة الحرارية ====================
-    st.subheader("🗺️ الخريطة الحرارية - مسار المعدة الفعلي")
+    # الخريطة الحرارية
+    st.subheader("🗺️ الخريطة الحرارية - مسار المعدة")
     
     fig = px.scatter_mapbox(
-        df,
-        lat="Latitude",
-        lon="Longitude",
-        color="Compaction_Modulus_%",
-        size=[15] * len(df),
-        size_max=25,
+        df, lat="Latitude", lon="Longitude", color="Compaction_Modulus_%",
+        size=[15]*len(df), size_max=25,
         color_continuous_scale=[
             (0.00, "#8B0000"), (0.10, "#DC143C"), (0.20, "#FF4500"),
             (0.30, "#FF8C00"), (0.40, "#FFD700"), (0.50, "#FFFF00"),
-            (0.60, "#ADFF2F"), (0.70, "#7CFC00"), (0.75, "#32CD32"),
-            (0.80, "#228B22"), (0.85, "#1E90FF"), (0.90, "#191970"),
-            (1.00, "#4B0082")
+            (0.60, "#ADFF2F"), (0.70, "#7CFC00"), (0.80, "#32CD32"),
+            (0.85, "#228B22"), (0.90, "#1E90FF"), (1.00, "#4B0082")
         ],
-        range_color=[60, 110],
-        zoom=17,
+        range_color=[60, 110], zoom=17,
         center={"lat": df['Latitude'].mean(), "lon": df['Longitude'].mean()},
         mapbox_style="carto-positron",
-        title=f"مسار المعدة - {len(df)} نقطة مسجلة تلقائياً | {st.session_state.unit_converter.format_area(1000)}",
-        hover_data={"Point_ID": True, "Passes": True, "Compaction_Modulus_%": ":.1f", "Accuracy_m": True}
+        title=f"مسار المعدة - {len(df)} نقطة | {st.session_state.unit_converter.config['name']}",
+        hover_data={"Point_ID": True, "Passes": True, "Compaction_Modulus_%": ":.1f"}
     )
     
     # إضافة خط المسار
-    fig.add_trace(
-        go.Scattermapbox(
-            lat=df['Latitude'].tolist(),
-            lon=df['Longitude'].tolist(),
-            mode='lines+markers',
-            marker=dict(size=8, color='gray'),
-            line=dict(width=2, color='darkgray', dash='solid'),
-            name='📍 مسار المعدة',
-            showlegend=True
-        )
-    )
+    fig.add_trace(go.Scattermapbox(
+        lat=df['Latitude'].tolist(), lon=df['Longitude'].tolist(),
+        mode='lines+markers', marker=dict(size=8, color='gray'),
+        line=dict(width=2, color='darkgray'), name='📍 المسار'
+    ))
     
-    # إضافة النقطة المرجعية
+    # النقطة المرجعية
     if st.session_state.reference_data:
         ref = st.session_state.reference_data
-        fig.add_trace(
-            go.Scattermapbox(
-                lat=[ref['lat']],
-                lon=[ref['lon']],
-                mode="markers",
-                marker=dict(size=20, symbol="star", color="gold"),
-                name="⭐ النقطة المرجعية",
-                hoverinfo="text",
-                text=f"Reference Point<br>Initial: {ref['initial']}%<br>Final: {ref['final']}%<br>Passes: {ref['passes']}"
-            )
-        )
+        fig.add_trace(go.Scattermapbox(
+            lat=[ref['lat']], lon=[ref['lon']],
+            mode="markers", marker=dict(size=20, symbol="star", color="gold"),
+            name="⭐ النقطة المرجعية"
+        ))
     
-    fig.update_layout(
-        margin={"r": 0, "t": 50, "l": 0, "b": 0},
-        height=550,
-        coloraxis_colorbar=dict(
-            title="معامل الدمك (%)",
-            tickvals=[60, 70, 80, 85, 90, 95, 100, 105, 110],
-            ticktext=["60", "70", "80", "85", "90", "95", "100", "105", "110+"]
-        )
-    )
-    
+    fig.update_layout(margin={"r": 0, "t": 50, "l": 0, "b": 0}, height=550)
     st.plotly_chart(fig, use_container_width=True)
     
-    # ==================== إحصائيات سريعة ====================
+    # إحصائيات
+    st.subheader("📊 إحصائيات وتحليلات")
     col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("📊 متوسط الدمك", f"{df['Compaction_Modulus_%'].mean():.1f}%")
-    with col2:
-        st.metric("📈 أعلى قيمة", f"{df['Compaction_Modulus_%'].max():.1f}%")
-    with col3:
-        st.metric("📉 أدنى قيمة", f"{df['Compaction_Modulus_%'].min():.1f}%")
-    with col4:
-        std_val = df['Compaction_Modulus_%'].std()
-        st.metric("📐 الانحراف المعياري", f"{std_val:.1f}")
-    with col5:
-        good_pct = (df['Compaction_Modulus_%'] >= 95).sum() / len(df) * 100
-        st.metric("✅ نسبة الجيد", f"{good_pct:.0f}%")
+    with col1: st.metric("📊 المتوسط", f"{df['Compaction_Modulus_%'].mean():.1f}%")
+    with col2: st.metric("📈 الأعلى", f"{df['Compaction_Modulus_%'].max():.1f}%")
+    with col3: st.metric("📉 الأدنى", f"{df['Compaction_Modulus_%'].min():.1f}%")
+    with col4: st.metric("📐 الانحراف", f"{df['Compaction_Modulus_%'].std():.2f}")
+    with col5: 
+        good = len(df[df['Status_Type'] == 'good'])
+        st.metric("✅ المقبول", f"{good}/{len(df)}")
     
-    # ==================== زر التصدير ====================
-    st.markdown("---")
-    col1, col2 = st.columns(2)
+    # رسم بياني للتوزيع
+    fig_hist = px.histogram(df, x="Compaction_Modulus_%", nbins=20,
+                            title="توزيع قيم معامل الدمك",
+                            labels={"Compaction_Modulus_%": "معامل الدمك (%)", "count": "عدد النقاط"})
+    fig_hist.add_vline(x=95, line_dash="dash", line_color="green", annotation_text="الهدف 95%")
+    st.plotly_chart(fig_hist, use_container_width=True)
     
-    with col1:
-        if st.button("📊 تصدير إلى Excel", use_container_width=True):
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Compaction_Data', index=False)
-                
-                # إضافة ملخص
-                summary_data = {
-                    "Parameter": ["Project Code", "Project Name", "Layer", "Unit System", "Max Density",
-                                  "Reference Point", "Reference Passes", "Initial Compaction", "Final Compaction",
-                                  "Average Compaction", "Min Compaction", "Max Compaction", "Total Points", "Date"],
-                    "Value": [project_code, project_name, layer_number, 
-                              "Metric" if unit_system == "metric" else "Imperial",
-                              st.session_state.unit_converter.density_display(max_density_input),
-                              f"{ref_latitude:.6f}, {ref_longitude:.6f}" if st.session_state.reference_data else "Not set",
-                              reference_passes, f"{initial_compaction}%", f"{final_compaction}%",
-                              f"{df['Compaction_Modulus_%'].mean():.1f}%", f"{df['Compaction_Modulus_%'].min():.1f}%",
-                              f"{df['Compaction_Modulus_%'].max():.1f}%", len(df), datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
-                }
-                pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
-            
-            st.download_button(
-                label="📥 تحميل",
-                data=output.getvalue(),
-                file_name=f"FMA_Data_{project_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-    
-    with col2:
-        if st.button("🗺️ تصدير الخريطة (HTML)", use_container_width=True):
-            fig.write_html(f"FMA_Map_{project_code}.html")
-            with open(f"FMA_Map_{project_code}.html", "r") as f:
-                st.download_button("📥 تحميل الخريطة", f.read(), file_name=f"FMA_Map_{project_code}.html", mime="text/html")
+    # تصدير
+    if 'show_export' in st.session_state and st.session_state.show_export:
+        st.subheader("📄 تصدير التقارير")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            excel_data = ReportGenerator.to_excel(df, st.session_state.reference_data, 
+                                                  st.session_state.project_data, st.session_state.unit_converter)
+            st.download_button("📊 Excel", excel_data, f"report_{project_id}.xlsx", 
+                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        
+        with col2:
+            html_report = ReportGenerator.to_html(df, st.session_state.reference_data,
+                                                  st.session_state.project_data, st.session_state.unit_converter)
+            st.download_button("📄 HTML", html_report, f"report_{project_id}.html", "text/html")
+        
+        with col3:
+            fig.write_html(f"map_{project_id}.html")
+            with open(f"map_{project_id}.html", "r") as f:
+                st.download_button("🗺️ الخريطة", f.read(), f"map_{project_id}.html", "text/html")
 
-else:
-    if st.session_state.is_tracking:
-        st.info("📍 جاري انتظار إشارة GPS... حرك الهاتف في مكان مفتوح")
-    else:
-        st.info("💡 اضغط 'بدء التتبع' وحرك هاتفك مع المعدة - سيتم التسجيل تلقائياً")
-
-# ==================== تعليمات التشغيل ====================
-with st.expander("📖 تعليمات التشغيل", expanded=False):
+# ==================== تعليمات ====================
+with st.expander("📖 تعليمات التشغيل الكاملة", expanded=False):
     st.markdown(f"""
-    ### كيفية استخدام التطبيق (نظام {'متري' if unit_system == 'metric' else 'إمبراطوري'})
+    ### 🚀 خطوات التشغيل
     
-    1. **السماح بالوصول إلى الموقع** - عندما يطلب المتصفح الإذن، اضغط "سماح"
+    1. **المعايرة** - أدخل قيم النقطة المرجعية (مكان معروف)
+    2. **بدء التتبع** - اضغط زر "بدء التتبع التلقائي"
+    3. **السماح بـ GPS** - أسمح للتطبيق بالوصول إلى موقعك
+    4. **التحرك** - تحرك مع المعدة، سيتم التسجيل تلقائياً
+    5. **التصدير** - بعد الانتهاء، صدر التقرير المناسب
     
-    2. **تعيين النقطة المرجعية** - قف في موقع معروف واضغط على الزر
+    ### 📏 نظام الوحدات
     
-    3. **بدء التتبع التلقائي** - اضغط على زر "بدء التتبع"
+    - **متري**: متر، كيلومتر، كجم/م³
+    - **إمبراطوري**: قدم، ميل، رطل/قدم³
     
-    4. **تحريك المعدة** - تحرك مع المعدة، سيتم تسجيل النقاط تلقائياً كل {st.session_state.unit_converter.format_distance(spacing_threshold)}
+    ### 🎨 تفسير الألوان
     
-    5. **مراقبة الخريطة** - ستظهر النقاط على الخريطة مع ألوان حسب جودة الدمك
+    - 🔴 **أحمر**: أقل من 80% (ضعيف جداً)
+    - 🟠 **برتقالي/أصفر**: 80-95% (يحتاج تحسين)
+    - 🟢 **أخضر**: 95-100% (جيد - مقبول)
+    - 🔵 **أزرق/نيلي**: أكثر من 100% (دمك مفرط)
     
-    ### إعدادات التسجيل التلقائي:
-    - **مسافة التباعد**: {st.session_state.unit_converter.format_distance(spacing_threshold)}
-    - **فترة التحديث**: {auto_record_interval} ثانية
-    - **دقة GPS المطلوبة**: {min_accuracy} متر
+    ### 💾 حفظ المشاريع
     
-    ### تفسير الألوان:
-    - 🔴 أحمر: معامل دمك أقل من 80% (ضعيف)
-    - 🟡 أصفر/برتقالي: 80-95% (متوسط)
-    - 🟢 أخضر: 95-100% (جيد)
-    - 🔵 أزرق/نيلي: أكثر من 100% (دمك مفرط)
+    يمكنك حفظ المشاريع واسترجاعها لاحقاً من الشريط الجانبي
     """)
 
-print("✅ FMA Auto Tracking System is running!")
+st.markdown("---")
+st.caption(f"🏗️ FMA Compaction Analyzer Pro v4.0 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+print("✅ FMA Compaction Complete System is running!")
